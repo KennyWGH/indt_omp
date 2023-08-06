@@ -1,56 +1,58 @@
-# ndt_omp
+# Incremental NDT-OMP algorithm (iNDT)
 
-This package provides an OpenMP-boosted Normal Distributions Transform (and GICP) algorithm derived from pcl. The NDT algorithm is modified to be SSE-friendly and multi-threaded. It can run up to 10 times faster than its original version in pcl.
+*Note: This README file has both Chinese version and English version, for English version please scroll down.*
+<!-- I have offered  -->
 
-For using this package in non-ROS1 projects (ROS2 or without ROS), see forked repositories: [dfki-ric/pclomp](https://github.com/dfki-ric/pclomp) [tier4/ndt_omp](https://github.com/tier4/ndt_omp).
+## 一、简介
 
-[![Build](https://github.com/koide3/ndt_omp/actions/workflows/build.yml/badge.svg)](https://github.com/koide3/ndt_omp/actions/workflows/build.yml)
+一种快速且优雅的 **增量式NDT算法** 开源实现 —— A Fast and Elegant Implementation of **Incremental NDT algorithm (iNDT)** based on ndt_omp。
 
-### Benchmark (on Core i7-6700K)
-```
-$ roscd ndt_omp/data
-$ rosrun ndt_omp align 251370668.pcd 251371071.pcd
---- pcl::NDT ---
-single : 282.222[msec]
-10times: 2921.92[msec]
-fitness: 0.213937
+众所周知，NDT（Normal Distribution Transform）算法是一种极为基础的点云配准算法，它将一帧点云（source）对齐到另一帧点云（target）上。
+通常，NDT 算法需要先将 target 点云投影到排列整齐的体素（voxel）中，并对每一个体素内的点云拟合高斯分布；
+而后，NDT对 source 点云中的每一个点寻找若干个近邻voxel，并用这些近邻voxel中的高斯分布来构建残差和雅可比，借助L-M优化算法实现梯度下降，获得最终的配准位姿。
 
---- pclomp::NDT (KDTREE, 1 threads) ---
-single : 207.697[msec]
-10times: 2059.19[msec]
-fitness: 0.213937
+传统NDT算法有两个耗时较高的环节可以被优化：
+1. 每次NDT配准时都需要重新对target点云拟合高斯分布，即使当前target和上一次的target相差不大；
+2. 每次重置target点云后，都需要重新生成kdtree，以满足为source点云中的点查找近邻voxel的需求。
 
---- pclomp::NDT (DIRECT7, 1 threads) ---
-single : 139.433[msec]
-10times: 1356.79[msec]
-fitness: 0.214205
+针对上述问题，本仓库实现了增量式的NDT算法，`我们使用哈系表结构持有和维护所有的voxel，并在单个voxel内实现了高斯分布的增量式更新算法`，从而避免了重复性地重构体素地图，且无需构建kdtree即可实现近邻voxel查询，大大提升了效率。根据实验对比，在以NDT为基础的LIO应用中，iNDT(with omp) 的计算速度是传统 NDT(with omp) 的xx倍。
 
---- pclomp::NDT (DIRECT1, 1 threads) ---
-single : 34.6418[msec]
-10times: 317.03[msec]
-fitness: 0.208511
 
---- pclomp::NDT (KDTREE, 8 threads) ---
-single : 54.9903[msec]
-10times: 500.51[msec]
-fitness: 0.213937
+**未完待续 ...**
 
---- pclomp::NDT (DIRECT7, 8 threads) ---
-single : 63.1442[msec]
-10times: 343.336[msec]
-fitness: 0.214205
+## 二、实验对比
 
---- pclomp::NDT (DIRECT1, 8 threads) ---
-single : 17.2353[msec]
-10times: 100.025[msec]
-fitness: 0.208511
-```
 
-Several methods for neighbor voxel search are implemented. If you select pclomp::KDTREE, results will be completely the same as that of the original pcl::NDT. We recommend using pclomp::DIRECT7 which is faster and stable. If you need extremely fast registration, choose pclomp::DIRECT1, but it might be a bit unstable.
+
+## 三、编译与运行
+
+
+
+## 四、应用示例（LIO & Localization）
+
 
 <img src="data/screenshot.png" height="400pix" /><br>
 Red: target, Green: source, Blue: aligned
 
-## Related packages
+## 五、相关仓库
+
+- [ndt_omp](https://github.com/koide3/ndt_omp)
+- [fast_gicp](https://github.com/SMRT-AIST/fast_gicp)
+
+
+--- 
+<!-- separating line  -->
+
+Coming soon ...
+
+## 1. Introduction
+
+## 2. Experimental Results
+
+## 3. Compile and Run
+
+## 4. Application Examples (LIO & Localization)
+
+## 5. Related packages
 - [ndt_omp](https://github.com/koide3/ndt_omp)
 - [fast_gicp](https://github.com/SMRT-AIST/fast_gicp)

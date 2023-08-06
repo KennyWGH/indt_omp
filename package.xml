@@ -3,9 +3,10 @@
 <package format="3">
   <name>ndt_omp</name>
   <version>0.0.0</version>
-  <description>OpenMP boosted NDT and GICP algorithms</description>
+  <description>OpenMP boosted iNDT algorithms</description>
 
   <maintainer email="koide@aisl.cs.tut.ac.jp">koide</maintainer>
+  <maintainer email="guanhuamail@163.com">koide</maintainer>
 
   <license>BSD</license>
 
