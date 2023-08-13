@@ -79,7 +79,7 @@ rviz -d ros_examples/rviz/update_voxel_distrib.rviz
 ./build/devel/lib/ndt_omp/run_update_voxel_distrib_demo
 ```
 
-如果一切顺利，您将在rviz界面中依次看到3组结果依次展示出来，如下图所示。
+如果一切顺利，您将在rviz界面中看到3组结果依次展示出来，如下图所示。
 
 <img src="docs/update_voxel_distrib.jpg" width="800pix" /><br>
 *图：高斯分布的增量式更新（从左至右，voxel中不断新增点云，高斯分布随之更新）*
@@ -110,17 +110,26 @@ rosbag play campus_large_dataset.bag -r 0.8
 
 iNDT类名： **pclomp::IncrementalNDT**
 
-核心接口（传统部分）：
+核心接口（传统部分，继承自基类pcl::Registration，或来自ndt_omp）：
+- **setResolution()** 设置voxel分辨率
+- **setMaximumIterations()** 设置允许的最大迭代次数 
+- **setNeighborhoodSearchMethod()** 设置最近邻规则
+- **setNumThreads()** 设置omp加速线程数 
+- **....** 
+- **setInputTarget()** 设置target点云（内部已实现增量式，也即：该接口实质上是在增量式地更新voxel地图；我希望这个过程是无感的，因此重载了原有接口）
+- **setInputSource()** 设置source点云
+- **align()** 执行一次NDT配准
 
-核心接口（新增部分）：
 
-- **enableIncrementalMode()** 开启、关闭增量式模式
-- **setSpatialBoundingBoxForVoxels()** 设置地图地图的范围，超过此范围自动卸载
-- **setAutoTrimEveryNMeters()** 设置执行自动卸载的条件
-- **enableInLeafDownsample()** 开启、关闭体素内的‘体素降采样’，以控制插入点的密度
-- **getInLeafPointCloud()** 获取整个地图的voxel中的点云
-- **getDisplayCloud()** 获取整个地图的voxel中的点云（采样高斯分布获得）
-- **getVoxelsData()** 获取整个地图的voxel信息，包含voxel的索引、坐标、高斯分布、特征值/特征向量等
+核心接口（新增部分，主要用来设置incremental行为模式）：
+
+- **enableIncrementalMode()** 开启、关闭增量式模式，若关闭则回退到常规ndt_omp
+- **setSpatialBoundingBoxForVoxels()** 设置voxel地图的范围，超过此范围的voxel将被自动卸载
+- **setAutoTrimEveryNMeters()** 开启、关闭自动卸载voxel模式，以及设置触发条件
+- **enableInLeafDownsample()** 开启、关闭体素内的‘体素降采样’，若开启可控制插入点的密度
+- **getInLeafPointCloud()** 获取整个地图的voxel中的点云，仅在开启InLeafDownsample后有效
+- **getDisplayCloud()** 获取整个地图的voxel中的点云（采样高斯分布生成的虚拟点云）
+- **getVoxelsData()** 获取整个地图的voxels，包含voxel的索引、坐标、高斯分布、特征值/特征向量等
 - **setVerboseMode()** 是否打印更详细的日志，及日志等级
 
 *TODO: 未完待续 ...*
