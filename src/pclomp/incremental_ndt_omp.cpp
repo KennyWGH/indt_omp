@@ -6,8 +6,8 @@
  * All rights reserved.
 */
 
-#include <pclomp/incremental_ndt_omp.h>
-#include <pclomp/incremental_ndt_omp_impl.hpp>
+#include "pclomp/incremental_ndt_omp.h"
+#include "pclomp/incremental_ndt_omp_impl.hpp"
 
 template class pclomp::IncrementalNDT<pcl::PointXYZ, pcl::PointXYZ>;
 template class pclomp::IncrementalNDT<pcl::PointXYZI, pcl::PointXYZI>;

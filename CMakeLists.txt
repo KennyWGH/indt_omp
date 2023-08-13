@@ -100,14 +100,43 @@ if($ENV{ROS_VERSION} EQUAL 1)
     incremental_ndt_omp
   )
 
-  ## Build executable: update indt-based LiDAR-Odom ##
+  ## Build executable: run update voxel distribution demo ##
+  add_executable(run_update_voxel_distrib_demo
+    ros_examples/run_update_voxel_distrib_demo.cpp
+    ros_examples/utils/utility.cpp
+  )
+  add_dependencies(run_update_voxel_distrib_demo
+    incremental_ndt_omp
+  )
+  target_link_libraries(run_update_voxel_distrib_demo
+    ${catkin_LIBRARIES}
+    ${PCL_LIBRARIES}
+    incremental_ndt_omp
+  )
+
+  ## Build executable: run indt-based LiDAR-Odom ##
   add_executable(run_indt_lio_demo
     ros_examples/run_indt_lio_demo.cpp
+    ros_examples/utils/utility.cpp
   )
   add_dependencies(run_indt_lio_demo
     incremental_ndt_omp
   )
   target_link_libraries(run_indt_lio_demo
+    ${catkin_LIBRARIES}
+    ${PCL_LIBRARIES}
+    incremental_ndt_omp
+  )
+
+  ## Build executable: run indt-based LiDAR-Loc ##
+  add_executable(run_indt_loc_demo
+    ros_examples/run_indt_loc_demo.cpp
+    ros_examples/utils/utility.cpp
+  )
+  add_dependencies(run_indt_loc_demo
+    incremental_ndt_omp
+  )
+  target_link_libraries(run_indt_loc_demo
     ${catkin_LIBRARIES}
     ${PCL_LIBRARIES}
     incremental_ndt_omp

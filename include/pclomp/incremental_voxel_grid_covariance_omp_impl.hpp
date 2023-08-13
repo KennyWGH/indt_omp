@@ -71,7 +71,7 @@ pclomp::IncrementalVoxelGridCovariance<PointT>::applyFilter (PointCloud &output)
   // **************************** incremental mode **************************** //
 
   if (enable_incremetal_mode_) {
-    applyFilterUnderIncrementalMode(output);
+    applyFilterIncrementally(output);
     return;
   }
 
@@ -420,32 +420,8 @@ pclomp::IncrementalVoxelGridCovariance<PointT>::applyFilter (PointCloud &output)
 
 // [WANG_Guanhua] 增量式版本核心代码：增量式地更新内部的voxels。
 template<typename PointT> void
-pclomp::IncrementalVoxelGridCovariance<PointT>::applyFilterUnderIncrementalMode (PointCloud &output)
+pclomp::IncrementalVoxelGridCovariance<PointT>::applyFilterIncrementally (PointCloud &output)
 {
-  // // init containers with empty voxels inside spatial range limit.
-  // bool enable_init_voxels = false;
-  // if (voxels_map_.empty() && enable_init_voxels) {
-  //   const int alongX_num_voxels = bounding_box_size_[0] * inverse_leaf_size_[0] + 1;
-  //   const int alongY_num_voxels = bounding_box_size_[1] * inverse_leaf_size_[1] + 1;
-  //   const int alongZ_num_voxels = bounding_box_size_[2] * inverse_leaf_size_[2] + 1;
-  //   const Eigen::Array3i offset = {alongX_num_voxels / 2, 
-  //                                   alongY_num_voxels / 2, 
-  //                                   alongZ_num_voxels / 2};
-  //   size_t num_inited_voxels = 0;
-  //   for (int i = 0; i < alongX_num_voxels; ++i) {
-  //     for (int j = 0; j < alongY_num_voxels; ++j) {
-  //       for (int k = 0; k < alongZ_num_voxels; ++k) {
-  //         Eigen::Array3i voxel_3dkey = Eigen::Array3i(i,j,k) - offset;
-  //         voxels_list_.push_front(
-  //           std::make_pair(voxel_3dkey, 
-  //             boost::make_unique<Leaf>()));
-  //         voxels_map_.insert(std::make_pair(voxel_3dkey, voxels_list_.begin()));
-  //         ++num_inited_voxels;
-  //       }
-  //     }
-  //   }
-  // }
-
   // reset these variables unconditionally.
   voxel_centroids_leaf_3d_indices_.clear ();
   min_b_ = Eigen::Vector4i::Zero();
@@ -454,7 +430,7 @@ pclomp::IncrementalVoxelGridCovariance<PointT>::applyFilterUnderIncrementalMode 
   divb_mul_ = Eigen::Vector4i::Zero();
 
   if (!input_) {
-    PCL_WARN ("[pcl::%s::applyFilterUnderIncrementalMode] No input dataset given!\n", getClassName ().c_str ());
+    PCL_WARN ("[pcl::%s::applyFilterIncrementally] No input dataset given!\n", getClassName ().c_str ());
     output.width = output.height = 0;
     output.points.clear ();
     return;
@@ -491,7 +467,7 @@ pclomp::IncrementalVoxelGridCovariance<PointT>::applyFilterUnderIncrementalMode 
 
   // ****************************************************************************************************
   // During first pass, collect all leaves that were inserted with new points for further update.
-  SpaceHashMap leafves_need_update;
+  SpaceHashMap leavEs_need_update;
 
   // If we don't want to process the entire cloud, but rather filter points far away from the viewpoint first...
   if (!filter_field_name_.empty ()) {
@@ -499,7 +475,7 @@ pclomp::IncrementalVoxelGridCovariance<PointT>::applyFilterUnderIncrementalMode 
     std::vector<pcl::PCLPointField> fields;
     int distance_idx = pcl::getFieldIndex<PointT> (filter_field_name_, fields);
     if (distance_idx == -1) /*this field doesn't exist*/ { 
-      PCL_WARN ("[pcl::%s::applyFilterUnderIncrementalMode] Invalid filter field name. Index is %d.\n", getClassName ().c_str (), distance_idx);
+      PCL_WARN ("[pcl::%s::applyFilterIncrementally] Invalid filter field name. Index is %d.\n", getClassName ().c_str (), distance_idx);
     }
 
     // First pass: go over all points and insert them into the right leaf
@@ -542,7 +518,7 @@ pclomp::IncrementalVoxelGridCovariance<PointT>::applyFilterUnderIncrementalMode 
       if (voxel_ite != voxels_map_.end()) {
         // Handle exception.
         if (!IsEqualIndex(voxel_3dkey, voxel_ite->second->first)) {
-          PCL_WARN ("[pcl::%s::applyFilterUnderIncrementalMode] voxel index conflicts: [%d, %d, %d] != [%d, %d, %d], skip it.\n", 
+          PCL_WARN ("[pcl::%s::applyFilterIncrementally] voxel index conflicts: [%d, %d, %d] != [%d, %d, %d], skip it.\n", 
             getClassName ().c_str (), voxel_3dkey[0], voxel_3dkey[1], voxel_3dkey[2], 
             voxel_ite->second->first[0], voxel_ite->second->first[1], voxel_ite->second->first[2]);
           continue;
@@ -550,17 +526,35 @@ pclomp::IncrementalVoxelGridCovariance<PointT>::applyFilterUnderIncrementalMode 
       }
       else {
         // add new leaf.
-        voxels_list_.push_front(std::make_pair(voxel_3dkey, boost::make_unique<Leaf>()));
+        Eigen::Array3f leaf_size_array(leaf_size_[0], leaf_size_[1], leaf_size_[2]);
+        voxels_list_.push_front(std::make_pair(
+          voxel_3dkey, boost::make_unique<Leaf>(
+            enable_inleaf_downsample_,
+            voxel_3dkey.cast<float>() * leaf_size_array,
+            leaf_size_array,
+            inleaf_voxelize_ratio_)
+        ));
         voxels_map_.insert(std::make_pair(voxel_3dkey, voxels_list_.begin()));
         voxel_ite = voxels_map_.find(voxel_3dkey);
+        if (verbose_info_level_ >= 1) {
+          std::cout << "[debug] creating new voxel, key=[" << voxel_3dkey.transpose() 
+            << "], LeafSize=[" << leaf_size_.transpose() << "]" << std::endl;
+        }
       }
-
-      // record leaf for further mean & covariance update.
-      leafves_need_update.insert((*voxel_ite));
 
       // insert point to leaf.
       Leaf& leaf = *(voxel_ite->second->second);
 
+      // in-leaf downsample.
+      if (!leaf.insertWithDownsample(input_->points[cp])) 
+      {
+        continue;
+      }
+
+      // record leaf for further mean & covariance update.
+      leavEs_need_update.insert((*voxel_ite));
+
+      // accumulate points statistics.
       if (leaf.nr_points == 0)
       {
         leaf.centroid.resize (centroid_size); //centroid的field要和PointT保持一致
@@ -569,16 +563,13 @@ pclomp::IncrementalVoxelGridCovariance<PointT>::applyFilterUnderIncrementalMode 
 
       Eigen::Vector3d pt3d (input_->points[cp].x, input_->points[cp].y, input_->points[cp].z);
       // Accumulate point sum for centroid calculation
-      // leaf.mean_ += pt3d;
       leaf.pt_sum_ += pt3d;
       // Accumulate x*xT for single pass covariance calculation
-      // leaf.cov_ += pt3d * pt3d.transpose ();
       leaf.pt_sq_sum_ += pt3d * pt3d.transpose ();
 
       // Do we need to process all the fields?
       if (!downsample_all_data_) {
         Eigen::Vector4f pt (input_->points[cp].x, input_->points[cp].y, input_->points[cp].z, 0);
-        // leaf.centroid.template head<4> () += pt;
         leaf.centroid_sum_.template head<4> () += pt;
       } else {
         // Copy all the fields
@@ -603,9 +594,7 @@ pclomp::IncrementalVoxelGridCovariance<PointT>::applyFilterUnderIncrementalMode 
   }
   // No distance filtering, process all data
   else {
-    
-    // std::cout << "[debug] voxel size: " << leaf_size_.transpose() << std::endl;
-    // std::cout << "[debug] voxel size inverse: " << inverse_leaf_size_.transpose() << std::endl;
+
     // First pass: go over all points and insert them into the right leaf
     for (size_t cp = 0; cp < input_->points.size (); ++cp) {
       // Check if the point is invalid
@@ -624,36 +613,47 @@ pclomp::IncrementalVoxelGridCovariance<PointT>::applyFilterUnderIncrementalMode 
 
       // find corresponding leaf!
       Eigen::Array3i voxel_3dkey(ijk0, ijk1, ijk2);
-      // std::cout << "[debug] point projected to voxel-key: " << voxel_3dkey.transpose() << std::endl;
       auto voxel_ite = voxels_map_.find(voxel_3dkey);
       if (voxel_ite != voxels_map_.end()) {
         // Handle exception.
         if (!IsEqualIndex(voxel_3dkey, voxel_ite->second->first)) {
-          PCL_WARN ("[pcl::%s::applyFilterUnderIncrementalMode] voxel index conflicts: [%d, %d, %d] != [%d, %d, %d], skip it.\n", 
+          PCL_WARN ("[pcl::%s::applyFilterIncrementally] voxel index conflicts: [%d, %d, %d] != [%d, %d, %d], skip it.\n", 
             getClassName ().c_str (), voxel_3dkey[0], voxel_3dkey[1], voxel_3dkey[2], 
             voxel_ite->second->first[0], voxel_ite->second->first[1], voxel_ite->second->first[2]);
           continue;
         }
-        // std::cout << "[debug] voxel already existed. " << std::endl;
       }
       else {
         // add new leaf.
-        voxels_list_.push_front(std::make_pair(voxel_3dkey, boost::make_unique<Leaf>()));
+        Eigen::Array3f leaf_size_array(leaf_size_[0], leaf_size_[1], leaf_size_[2]);
+        voxels_list_.push_front(std::make_pair(
+          voxel_3dkey, boost::make_unique<Leaf>(
+            enable_inleaf_downsample_,
+            voxel_3dkey.cast<float>() * leaf_size_array,
+            leaf_size_array,
+            inleaf_voxelize_ratio_)
+        ));
         voxels_map_.insert(std::make_pair(voxel_3dkey, voxels_list_.begin()));
         voxel_ite = voxels_map_.find(voxel_3dkey);
         if (verbose_info_level_ >= 1) {
           std::cout << "[debug] creating new voxel, key=[" << voxel_3dkey.transpose() 
             << "], LeafSize=[" << leaf_size_.transpose() << "]" << std::endl;
         }
-        
       }
-
-      // record leaf for further mean & covariance update.
-      leafves_need_update.insert((*voxel_ite));
 
       // insert point to leaf.
       Leaf& leaf = *(voxel_ite->second->second);
 
+      // in-leaf downsample.
+      if (!leaf.insertWithDownsample(input_->points[cp])) 
+      {
+        continue;
+      }
+
+      // record leaf for further mean & covariance update.
+      leavEs_need_update.insert((*voxel_ite));
+
+      // accumulate points statistics.
       if (leaf.nr_points == 0) {
         leaf.centroid.resize (centroid_size);
         leaf.centroid.setZero ();
@@ -663,16 +663,13 @@ pclomp::IncrementalVoxelGridCovariance<PointT>::applyFilterUnderIncrementalMode 
 
       Eigen::Vector3d pt3d (input_->points[cp].x, input_->points[cp].y, input_->points[cp].z);
       // Accumulate point sum for centroid calculation
-      // leaf.mean_ += pt3d;
       leaf.pt_sum_ += pt3d;
       // Accumulate x*xT for single pass covariance calculation
-      // leaf.cov_ += pt3d * pt3d.transpose ();
       leaf.pt_sq_sum_ += pt3d * pt3d.transpose ();
 
       // Do we need to process all the fields?
       if (!downsample_all_data_) {
         Eigen::Vector4f pt (input_->points[cp].x, input_->points[cp].y, input_->points[cp].z, 0);
-        // leaf.centroid.template head<4> () += pt;
         leaf.centroid_sum_.template head<4> () += pt;
       }
       else {
@@ -711,11 +708,11 @@ pclomp::IncrementalVoxelGridCovariance<PointT>::applyFilterUnderIncrementalMode 
   // Eigen values less than a threshold of max eigen value are inflated to a set fraction of the max eigen value.
   double min_covar_eigvalue;
 
-  for (auto& it : leafves_need_update) {
+  for (auto& it : leavEs_need_update) {
     Leaf& leaf = *(it.second->second);
 
     // that's pretty cool, really love this, the code here looks much more clean and elegant.
-    leaf.UpdateState(min_points_per_voxel_);
+    leaf.updateState(min_points_per_voxel_);
 
     if (verbose_info_level_ >= 2) {
       std::cout << "[debug] updated voxel [" << it.first.transpose() 
@@ -725,7 +722,7 @@ pclomp::IncrementalVoxelGridCovariance<PointT>::applyFilterUnderIncrementalMode 
   }
 
   // ****************************************************************************************************
-  // Third pass: go over all leaves and generate output, update data or information if demanded.
+  // Third pass(optional): go over all leaves and generate output, update data or information if demanded.
   // 可用于更新: output点云，包络盒范围信息，centroid点云索引到哈希表key的映射表。
   if (searchable_ || generate_voxel_centroid_cloud_) {
     output.points.reserve (voxels_list_.size ());
@@ -796,66 +793,110 @@ pclomp::IncrementalVoxelGridCovariance<PointT>::applyFilterUnderIncrementalMode 
 
 // 根据当前位置和BoundingBox大小，动态卸载Box范围之外的voxel。
 template<typename PointT> void
-pclomp::IncrementalVoxelGridCovariance<PointT>::updateVoxelMapCenterAndTrim(
-  const Eigen::Vector3f &position) {
+pclomp::IncrementalVoxelGridCovariance<PointT>::trimVoxelsByBoundingBox(
+  const Eigen::Vector3f &box_center_position) {
 
-  // Important action: Trim voxels around current position when necessary!
-  current_position_ = position;
-  if ((current_position_ - last_trimmed_position_).norm() > trim_every_n_meters_) {
-    last_trimmed_position_ = current_position_;
-    Eigen::Array3f current_border_max = (current_position_ + 0.5 * bounding_box_size_).array();
-    Eigen::Array3f current_border_min = (current_position_ - 0.5 * bounding_box_size_).array();
-    Eigen::Array3f inv_leaf_size = Eigen::Array3f(
-      inverse_leaf_size_[0], inverse_leaf_size_[1], inverse_leaf_size_[2]);
-    Eigen::Array3i border_max_index = (current_border_max * inv_leaf_size).cast<int>();
-    Eigen::Array3i border_min_index = (current_border_min * inv_leaf_size).cast<int>();
-    float removed_voxels_ave_ditance = 0;
-    size_t removed_voxels_counts = 0;
-    size_t all_voxels_counts = voxels_list_.size();
-    if (verbose_info_level_ >= 0) {
-      std::cout << "[debug] try to remove extra voxels beyond bounding-box. \n";
-      std::cout << "[debug] current position [" << current_position_.transpose() << "]. \n";
-      std::cout << "[debug] bounding-box size [" << bounding_box_size_.transpose() << "]. \n";
-      std::cout << "[debug] current bounding-box: \n"
-        << "        X[" << current_border_min[0] << "," << current_border_max[0] << "]\n"
-        << "        Y[" << current_border_min[1] << "," << current_border_max[1] << "]\n"
-        << "        Z[" << current_border_min[2] << "," << current_border_max[2] << "]" << std::endl;
-    }
-    for (auto it = voxels_list_.begin(); it != voxels_list_.end(); ) {
-      const auto diff_to_max = it->first - border_max_index;
-      const auto diff_to_min = it->first - border_min_index;
-      if ((diff_to_max > 0).any() || (diff_to_min < 0).any()) {
-        if (verbose_info_level_ >= 1) {
-          Eigen::Vector3f voxel_position(
-            (it->first[0] + 0.5) * leaf_size_[0],
-            (it->first[1] + 0.5) * leaf_size_[1],
-            (it->first[2] + 0.5) * leaf_size_[2] );
-          removed_voxels_ave_ditance += (voxel_position - current_position_).norm();
-          std::cout << "[debug] removing voxel [" << it->first.transpose() 
-            << "], voxel position [" << voxel_position.transpose() 
-            << "], distance to POI [" << (voxel_position - current_position_).norm() 
-            << "]" << std::endl;
-        }
-        // unload voxels beyond spatial limit.
-        voxels_map_.erase(it->first);
-        it = voxels_list_.erase(it);
-        removed_voxels_counts++;
-      } else {
-        it++;
+  // Important action: Trim voxels around current position manually!
+  const Eigen::Vector3f current_position_ = box_center_position;
+  last_trimmed_position_ = current_position_;
+  Eigen::Array3f current_border_max = (current_position_ + 0.5 * bounding_box_size_).array();
+  Eigen::Array3f current_border_min = (current_position_ - 0.5 * bounding_box_size_).array();
+  Eigen::Array3f inv_leaf_size = Eigen::Array3f(
+    inverse_leaf_size_[0], inverse_leaf_size_[1], inverse_leaf_size_[2]);
+  Eigen::Array3i border_max_index = (current_border_max * inv_leaf_size).cast<int>();
+  Eigen::Array3i border_min_index = (current_border_min * inv_leaf_size).cast<int>();
+  float removed_voxels_ave_distance = 0;
+  size_t removed_voxels_counts = 0;
+  size_t all_voxels_counts = voxels_list_.size();
+  if (verbose_info_level_ >= 0) {
+    std::cout << "[debug] try to remove extra voxels beyond bounding-box. \n";
+    std::cout << "[debug] current position [" << current_position_.transpose() << "]. \n";
+    std::cout << "[debug] bounding-box size [" << bounding_box_size_.transpose() << "]. \n";
+    std::cout << "[debug] current bounding-box: \n"
+      << "        X[" << current_border_min[0] << "," << current_border_max[0] << "]\n"
+      << "        Y[" << current_border_min[1] << "," << current_border_max[1] << "]\n"
+      << "        Z[" << current_border_min[2] << "," << current_border_max[2] << "]" << std::endl;
+  }
+  for (auto it = voxels_list_.begin(); it != voxels_list_.end(); ) {
+    const auto diff_to_max = it->first - border_max_index;
+    const auto diff_to_min = it->first - border_min_index;
+    if ((diff_to_max > 0).any() || (diff_to_min < 0).any()) {
+      Eigen::Vector3f voxel_position(
+        (it->first[0] + 0.5) * leaf_size_[0],
+        (it->first[1] + 0.5) * leaf_size_[1],
+        (it->first[2] + 0.5) * leaf_size_[2] );
+      removed_voxels_ave_distance += (voxel_position - current_position_).norm();
+      if (verbose_info_level_ >= 1) {
+        std::cout << "[debug] removing voxel [" << it->first.transpose() 
+          << "], voxel position [" << voxel_position.transpose() 
+          << "], distance to POI [" << (voxel_position - current_position_).norm() 
+          << "]" << std::endl;
       }
+      // unload voxels.
+      voxels_map_.erase(it->first);
+      it = voxels_list_.erase(it);
+      removed_voxels_counts++;
+    } else {
+      it++;
     }
-    if (verbose_info_level_ >= 0) {
-      if (removed_voxels_counts > 0) {
-        removed_voxels_ave_ditance /= removed_voxels_counts;
-      }
-      std::cout << "[debug] Removed & unloaded [" << removed_voxels_counts 
-        << " / " << all_voxels_counts << "] voxels beyond bounding-box, ave-distance = " 
-        << removed_voxels_ave_ditance << std::endl;
+  }
+  if (verbose_info_level_ >= 0) {
+    if (removed_voxels_counts > 0) {
+      removed_voxels_ave_distance /= removed_voxels_counts;
     }
-    PCL_INFO ("[pcl::%s::applyFilterUnderIncrementalMode] Unloaded %d / %d voxels.\n", 
-      getClassName ().c_str (), removed_voxels_counts, all_voxels_counts);
+    std::cout << "[debug] Unloaded [" << removed_voxels_counts 
+      << " / " << all_voxels_counts << "] voxels beyond bounding-box, ave-distance = " 
+      << removed_voxels_ave_distance << std::endl;
+  }
+  PCL_INFO ("[pcl::%s::applyFilterIncrementally] Unloaded %d / %d voxels.\n", 
+    getClassName ().c_str (), removed_voxels_counts, all_voxels_counts);
+
+}
+
+
+
+// 根据指定的3D-Box区域，动态卸载区域范围之内的voxel。
+template<typename PointT> void
+pclomp::IncrementalVoxelGridCovariance<PointT>::trimVoxelsBySpecificArea(
+  const Eigen::Vector3f& min_p, const Eigen::Vector3f& max_p) {
+  // start.
+  const Eigen::Array3f min_position = min_p.array();
+  const Eigen::Array3f max_position = max_p.array();
+  size_t removed_voxels_counts = 0;
+  size_t all_voxels_counts = voxels_list_.size();
+  if (verbose_info_level_ >= 0) {
+    std::cout << "[debug] try to remove extra voxels falling in specified box. \n";
+    std::cout << "[debug] specified box: \n"
+      << "        X[" << min_p[0] << "," << max_p[0] << "]\n"
+      << "        Y[" << min_p[1] << "," << max_p[1] << "]\n"
+      << "        Z[" << min_p[2] << "," << max_p[2] << "]" << std::endl;
   }
 
+  for (auto it = voxels_list_.begin(); it != voxels_list_.end(); ) {
+    Eigen::Array3f voxel_position(
+      (it->first[0] + 0.5) * leaf_size_[0],
+      (it->first[1] + 0.5) * leaf_size_[1],
+      (it->first[2] + 0.5) * leaf_size_[2] );
+    if ((voxel_position > min_position).all() && (voxel_position < max_position).all()) {
+      if (verbose_info_level_ >= 1) {
+        std::cout << "[debug] removing voxel [" << it->first.transpose() 
+          << "], voxel position [" << voxel_position.transpose() 
+          << "]" << std::endl;
+      }
+      // unload voxels.
+      voxels_map_.erase(it->first);
+      it = voxels_list_.erase(it);
+      removed_voxels_counts++;
+    } else {
+      it++;
+    }
+  }
+  if (verbose_info_level_ >= 0) {
+    std::cout << "[debug] Unloaded [" << removed_voxels_counts 
+      << " / " << all_voxels_counts << "] voxels inside specified 3D area." << std::endl;
+  }
+  PCL_INFO ("[pcl::%s::applyFilterIncrementally] Unloaded %d / %d voxels.\n", 
+    getClassName ().c_str (), removed_voxels_counts, all_voxels_counts);
 
 }
 

@@ -35,6 +35,14 @@
  *
  */
 
+/**
+ * Copyright 2022 WANG_Guanhua(guanhuamail@163.com)
+ * 
+ * Software License Agreement (BSD License)
+ * 
+ * All rights reserved.
+*/
+
 #ifndef PCL_INCREMENTAL_VOXEL_GRID_COVARIANCE_OMP_H_
 #define PCL_INCREMENTAL_VOXEL_GRID_COVARIANCE_OMP_H_
 
@@ -50,7 +58,66 @@
 
 namespace pclomp
 {
-  /** \brief A searchable voxel structure containing the mean and covariance of the data.
+
+  namespace {
+    // [WANG_Guanhua] used to compute space hash key, same with space hash functor.
+    inline size_t computeSpaceHashKey(const Eigen::Array3i& key) {
+      return size_t(((key[0]) * long(73856093)) 
+                    ^ ((key[1]) * long(471943)) 
+                    ^ ((key[2]) * long(83492791))) 
+          % size_t(1000000000);
+    }
+  }
+
+  /**
+   * [WANG_Guanhua] used for output incremental voxel-map.
+  */
+  struct VoxelData {
+
+    explicit VoxelData(const Eigen::Vector3d& mean, 
+                          const Eigen::Matrix3d& cov, 
+                          const Eigen::Matrix3d& icov, 
+                          const Eigen::Matrix3d& evecs, 
+                          const Eigen::Vector3d& evals,
+                          const int& num_points = 0,
+                          const Eigen::Array3f& corner_coordnate = Eigen::Array3f::Zero(),
+                          const Eigen::Array3f& voxel_size = Eigen::Array3f::Zero())
+      : mean_(mean), cov_(cov), icov_(icov), evecs_(evecs), evals_(evals), num_points_(num_points),
+      corner_origin_(corner_coordnate), voxel_size_(voxel_size) {}
+
+    void setIndex3D(const Eigen::Array3i& index3d) 
+    {
+      index3d_ = index3d;
+      id_ = computeSpaceHashKey(index3d);
+    }
+
+    /** \brief 3D voxel centroid */
+    Eigen::Vector3d mean_;
+
+    /** \brief Voxel covariance matrix */
+    Eigen::Matrix3d cov_;
+
+    /** \brief Inverse of voxel covariance matrix */
+    Eigen::Matrix3d icov_;
+
+    /** \brief Eigen vectors of voxel covariance matrix */
+    Eigen::Matrix3d evecs_;
+
+    /** \brief Eigen values of voxel covariance matrix */
+    Eigen::Vector3d evals_;
+
+    /** \brief 3D-Index, centroid coordinates.*/
+    size_t id_ = 0;
+    int num_points_ = 0;
+    Eigen::Array3i index3d_ = Eigen::Array3i::Zero();
+    Eigen::Array3f corner_origin_ = Eigen::Array3f::Zero();
+    Eigen::Array3f voxel_size_ = Eigen::Array3f::Zero();
+  };
+
+  /** \brief An incremental version of original pclomp::VoxelGridCovariance.
+   *  \author WANG Guanhua (guanhuamail@163.com) (North Western Polytechnical University, China)
+   * 
+   *  \brief A searchable voxel structure containing the mean and covariance of the data.
     * \note For more information please see
     * <b>Magnusson, M. (2009). The Three-Dimensional Normal-Distributions Transform —
     * an Efficient Representation for Registration, Surface Analysis, and Loop Detection.
@@ -95,14 +162,18 @@ namespace pclomp
       typedef boost::shared_ptr< const pcl::VoxelGrid<PointT> > ConstPtr;
 #endif
 
-      /** \brief Simple structure to hold a centroid, covariance and the number of points in a leaf .
-        * Inverse covariance, eigen vectors and eigen values are precomputed. */
+      /** \brief An incremental version of original Leaf.
+       * \brief Simple structure to hold a centroid, covariance and the number of points in a leaf .
+       * Inverse covariance, eigen vectors and eigen values are precomputed. */
       struct Leaf
       {
         /** \brief Constructor.
          * Sets \ref nr_points, \ref icov_, \ref mean_ and \ref evals_ to 0 and \ref cov_ and \ref evecs_ to the identity matrix
          */
-        Leaf () :
+        Leaf (const bool& enable_downsample = false, 
+              const Eigen::Array3f& corner_coordinate = Eigen::Array3f::Zero(), 
+              const Eigen::Array3f& leaf_size = Eigen::Array3f::Zero(), 
+              const float& voxelize_ratio = 1) :
           nr_points (0),
           centroid (),
           mean_ (Eigen::Vector3d::Zero ()),
@@ -110,11 +181,19 @@ namespace pclomp
           icov_ (Eigen::Matrix3d::Zero ()),
           evecs_ (Eigen::Matrix3d::Identity ()),
           evals_ (Eigen::Vector3d::Zero ()),
-          inited_ (false),
           centroid_sum_ (),
           pt_sum_ (Eigen::Vector3d::Zero ()),
-          pt_sq_sum_ (Eigen::Matrix3d::Zero ())
+          pt_sq_sum_ (Eigen::Matrix3d::Zero ()),
+          enable_downsample_ (enable_downsample),
+          corner_origin_ (corner_coordinate),
+          inner_voxel_size_ (leaf_size / voxelize_ratio),
+          voxelize_ratio_ (voxelize_ratio)
         {
+          if (enable_downsample_) {
+            inner_inverse_voxel_size_ = Eigen::Array3f::Ones() / inner_voxel_size_;
+            occupied_table_.resize(voxelize_ratio_ * voxelize_ratio_ * voxelize_ratio_, false);
+            poInts__.reset(new PointCloud);
+          }
         }
 
         /** \brief Get the voxel covariance.
@@ -199,13 +278,7 @@ namespace pclomp
 
         /** **********************************************************************
          * [WANG_Guanhua] variables below are added to support incremental update!
-         * Basically, below variables are used to save 'last state'.
         */
-
-        /** \brief [WANG_Guanhua] true if already got mean & cov, in this case 
-         * incremental update is required.
-         */
-        bool inited_;
 
         /** \brief [WANG_Guanhua] Lifelong sum of "centroid". */
         Eigen::VectorXf centroid_sum_;
@@ -216,8 +289,46 @@ namespace pclomp
         /** \brief [WANG_Guanhua] Lifelong sum of "point square matrix". */
         Eigen::Matrix3d pt_sq_sum_;
 
+        /** \brief [WANG_Guanhua] used for in-leaf downsample and hold points. */
+        bool enable_downsample_;
+        Eigen::Array3f corner_origin_ = Eigen::Array3f::Zero();
+        Eigen::Array3f inner_voxel_size_ = Eigen::Array3f::Ones();
+        Eigen::Array3f inner_inverse_voxel_size_ = Eigen::Array3f::Zero();
+        float voxelize_ratio_ = 1.0;
+        std::vector<bool> occupied_table_;
+        std::vector<PointT> points_;
+        PointCloudPtr poInts__;
+
+        /** \brief [WANG_Guanhua] Query if given point is allowed to insert into leaf, 
+         * and insert it if insertable. [isInsertable & insertPoint] */
+        bool insertWithDownsample(const PointT& point)
+        {
+          if (!enable_downsample_) {
+            return true;
+          }
+          Eigen::Array3f pt_local(point.x - corner_origin_[0], 
+            point.y - corner_origin_[1], point.z - corner_origin_[2]);
+          Eigen::Array3i index3d = (pt_local * inner_inverse_voxel_size_).cast<int>();
+          int index1d = index3d[0] * voxelize_ratio_ * voxelize_ratio_ 
+                        + index3d[1] * voxelize_ratio_ + index3d[2];
+          if (index1d < 0 || index1d >= occupied_table_.size()) {
+            PCL_WARN (
+              "iVoxelGridCov::Leaf::insertWithDownsample : voxelize ratio (%d), index1d (%d) out of range, will ignore it.", 
+              voxelize_ratio_, index1d);
+            return false;
+          }
+          if (occupied_table_[index1d]) {
+            return false;
+          }
+          occupied_table_[index1d] = true;
+          // points_.push_back(point);
+          poInts__->points.push_back(point);
+          return true;
+        }
+
         /** \brief [WANG_Guanhua] Update mean & cov, compatiable with both usual mode and incremental mode. */
-        void UpdateState(const int& nun_points_required, const double& min_eigenvalue_ratio = 0.01) {
+        void updateState(const int& nun_points_required, const double& min_eigenvalue_ratio = 0.01) 
+        {
           // Eigen values and vectors calculated to prevent near singular matrices.
           Eigen::SelfAdjointEigenSolver<Eigen::Matrix3d> eigensolver;
           Eigen::Matrix3d eigen_val;
@@ -235,7 +346,7 @@ namespace pclomp
 
             //Normalize Eigen Val such that max no more than 100x min.
             eigensolver.compute (cov_);
-            eigen_val = eigensolver.eigenvalues ().asDiagonal ();
+            eigen_val = eigensolver.eigenvalues ().asDiagonal (); // from begin to end, small to large
             evecs_ = eigensolver.eigenvectors ();
 
             // unexpected situation.
@@ -267,6 +378,32 @@ namespace pclomp
           }
         }
 
+        /** \brief [WANG_Guanhua] reset leaf to completely initial state. */
+        void reset() 
+        {
+          nr_points = (0);
+          centroid.setZero(); // warn: @wgh check if this is safe when Eigen::VectorXf is not specified.
+          mean_ = (Eigen::Vector3d::Zero ());
+          cov_ = (Eigen::Matrix3d::Identity ());
+          icov_ = (Eigen::Matrix3d::Zero ());
+          evecs_ = (Eigen::Matrix3d::Identity ());
+          evals_ = (Eigen::Vector3d::Zero ());
+          centroid_sum_.setZero();
+          pt_sum_ = (Eigen::Vector3d::Zero ());
+          pt_sq_sum_ = (Eigen::Matrix3d::Zero ());
+          if (enable_downsample_) {
+            occupied_table_.resize(voxelize_ratio_ * voxelize_ratio_ * voxelize_ratio_, false);
+            points_.clear();
+          }
+        }
+
+        /** \brief [WANG_Guanhua] used for pass leaf information outward. */
+        VoxelData toVoxelData() 
+        {
+          return VoxelData(mean_, cov_, icov_, evecs_, evals_, nr_points, 
+            corner_origin_, inner_voxel_size_ * voxelize_ratio_);
+        }
+
       }; // struct Leaf
 
       /** \brief Pointer to IncrementalVoxelGridCovariance leaf structure */
@@ -291,11 +428,9 @@ namespace pclomp
         voxel_centroids_leaf_indices_ (),
         kdtree_ (),
         enable_incremetal_mode_ (true),
-        enable_voxel_downsample_ (false),
-        voxel_downsample_size_ (0.1),
+        enable_inleaf_downsample_ (true),
+        inleaf_voxelize_ratio_ (10),
         bounding_box_size_ (Eigen::Vector3f(200.f, 200.f, 100.f)), 
-        trim_every_n_meters_ (10.f),
-        current_position_ (Eigen::Vector3f(0.f, 0.f, 0.f)),
         last_trimmed_position_ (Eigen::Vector3f(0.f, 0.f, 0.f)),
         generate_voxel_centroid_cloud_ (false),
         enable_obb_update_ (false),
@@ -502,7 +637,8 @@ namespace pclomp
       void
       getDisplayCloud (pcl::PointCloud<pcl::PointXYZI>& cell_cloud, const int& num_points_per_voxel = 100);
 
-      /// TODO: @wgh 重写下边的4个函数（实际是2个），以适应incremental版本。
+      /// TODO: @wgh Rewrite below 4 (actually 2) methods to suppport kNN search.
+      /// 重写下边的4个函数（实际是2个）实现基于voxel的kNN查询，完善incremental版本。
 
       /** \brief Search for the k-nearest occupied voxels for the given query point.
        * \note Only voxels containing a sufficient number of points are used.
@@ -519,7 +655,7 @@ namespace pclomp
         k_leaves.clear ();
 
         if (enable_incremetal_mode_) {
-          PCL_WARN ("%s: Using kdtree in incremental mode, may affect computation efficiency.", 
+          PCL_WARN ("%s: Using kdtree in incremental mode, may affect computation efficiency. (not yet implemented)", 
             this->getClassName ().c_str ());
           return 0; /// TODO @wgh
         }
@@ -579,7 +715,7 @@ namespace pclomp
         k_leaves.clear ();
 
         if (enable_incremetal_mode_) {
-          PCL_WARN ("%s: Using kdtree in incremental mode, may affect computation efficiency.", 
+          PCL_WARN ("%s: Using kdtree in incremental mode, may affect computation efficiency. (not yet implemented)", 
             this->getClassName ().c_str ());
           return 0; /// TODO @wgh
         }
@@ -690,37 +826,35 @@ namespace pclomp
 
       /**
        * [WANG_Guanhua] We have 3 parameters to determine whether to go over all voxels 
-       * to get centroid cloud, they are:
+       * to collect data (mainly centroid point cloud), they are:
        * 
-       * 1. searchable_ : build kdtree or not  NOTE: building kdtree may take some time.
+       * 1. searchable_ : build kdtree from valid-voxels(centroid) or not  NOTE: building kdtree may take some time.
        * 2. enable_obb_update_ : update obb info or not
-       * 3. generate_voxel_centroid_cloud_ : generate point cloud from valid voxels or not (for visualization)
+       * 3. generate_voxel_centroid_cloud_ : generate point cloud from valid-voxels(centroid) or not (for visualization)
        * 
       */
 
     public:
 
       /** \brief [WANG_Guanhua] Enable or disable incremental mode.
-       * \param[in] value 
+       * \param[in] choice 
        * \return 
        */
       inline void 
-        setIncrementalMode(const bool &value) { enable_incremetal_mode_ = value; }
+        enableIncrementalMode(const bool &choice) { enable_incremetal_mode_ = choice; }
 
-      /** \brief [WANG_Guanhua] When incremental mode enabled, you can voxel filter all target points 
-       * within same voxel space, this can avoid too many points being repeatedly inserted into same area.
-       * \param[in] value 
-       * \param[in] voxel_size 
+      /** \brief [WANG_Guanhua] Under incremental mode, you can enable voxel downsample inside a leaf, 
+       * this helps to avoid repetitive points.
+       * \param[in] choice 
+       * \param[in] voxelize_ratio num of voxels would be (voxelize_ratio)^3.
        * \return 
-       * 
-       * [TODO:@wgh] for implementation, use a local voxel structure attached to a leaf, but for voxel-dowmsample purpose only.
        */
       inline void 
-        setVoxelDownsample(const bool &value, const float &voxel_size = 0.1) 
+        enableInLeafDownsample(const bool &choice, const float &voxelize_ratio = 10) 
       { 
-        enable_voxel_downsample_ = value;
-        if (value) {
-          voxel_downsample_size_ = voxel_size;
+        enable_inleaf_downsample_ = choice;
+        if (choice) {
+          inleaf_voxelize_ratio_ = voxelize_ratio;
         }
       }
 
@@ -736,46 +870,85 @@ namespace pclomp
       }
 
       /** \brief [WANG_Guanhua] When incremental mode enabled, update OBB min & max point or not.
-       * \param[in] value 
+       * \param[in] choice 
        * \return 
        */
       inline void
-        enableObbUpdate(const bool &value) { enable_obb_update_ = value; }
+        enableObbUpdate(const bool &choice) { enable_obb_update_ = choice; }
 
-      /** \brief [WANG_Guanhua] When incremental mode enabled, try to trim voxels beyond spatial limit 
-       * every several meters.
-       * \param[in] every_n_meters 
-       * \return 
-       */
-      inline void 
-        setTrimEveryNMeters(const float &every_n_meters) 
-      {
-        trim_every_n_meters_ = every_n_meters;
-      }
-
-      /** \brief [WANG_Guanhua] Get param value.
-       * \param[in]  
-       * \return param value.
-       */
-      inline float getTrimEveryNMeters() { return trim_every_n_meters_; }
-
-      /** \brief [WANG_Guanhua] When incremental mode enabled, give current position so that voxels 
-       * too far-away from current position can be unloaded.
+      /** \brief [WANG_Guanhua] When incremental mode enabled, give a position, then drop voxels 
+       * too far-away (out of bounding box) from current position.
        * \param[in] position 
        * \return 
        */
       inline void 
-        updateVoxelMapCenterAndTrim(const Eigen::Vector3f &position);
+        trimVoxelsByBoundingBox(const Eigen::Vector3f &box_center_position);
 
-      /** \brief [WANG_Guanhua] if true, print debug info, such as mean, cov, eigen value & vectors.
-       * \param[in] value 
+      /** \brief [WANG_Guanhua] When incremental mode enabled, drop voxels that locate inside 
+       * specified 3D-area.
+       * \param[in] position 
        * \return 
        */
       inline void 
-        showVerboseInfo(const bool &value, const int & level = 0) 
+        trimVoxelsBySpecificArea(const Eigen::Vector3f& min_p, const Eigen::Vector3f& max_p);
+
+      /** \brief [WANG_Guanhua] This will clear all voxels.
+       * \return 
+       */
+      inline void 
+        resetVoxels() 
+        {
+          voxels_map_.clear();
+          voxels_list_.clear();
+        }
+
+      /** \brief [WANG_Guanhua] Provide complete voxels data, you can use it for either computation 
+       * or visualization.
+       * \return voxels data.
+       */
+      inline std::shared_ptr<std::vector<VoxelData>> 
+        getVoxelsData() 
+      {
+        std::shared_ptr<std::vector<VoxelData>> voxels_data_(new std::vector<VoxelData>);
+        for (auto& elem : voxels_list_) {
+          if (elem.second->nr_points > min_points_per_voxel_) {
+            voxels_data_->push_back(elem.second->toVoxelData());
+            voxels_data_->back().setIndex3D(elem.first);
+          }
+        }
+        return voxels_data_;
+      }
+
+      /** \brief [WANG_Guanhua] If enable in-leaf downsample, then sampled points will be kept 
+       * inside leaf, this function will collect all these points.
+       * \note these points are those that truely be used for estimating normal distribution!
+       * \return point cloud.
+       */
+      inline PointCloudPtr 
+        getInLeafPointCloud() 
+      {
+        PointCloudPtr ds_point_cloud_(new PointCloud);
+        if (enable_inleaf_downsample_) {
+          for (auto& elem : voxels_list_) {
+            if (elem.second->nr_points > min_points_per_voxel_) {
+              if (elem.second->poInts__) {
+                *ds_point_cloud_ += *(elem.second->poInts__);
+              }
+            }
+          }
+        }
+        return ds_point_cloud_;
+      }
+
+      /** \brief [WANG_Guanhua] if true, print debug info, such as adding or removing leafs.
+       * \param[in] choice 
+       * \return 
+       */
+      inline void 
+        logVerboseInfo(const bool &choice, const int & level = 0) 
       { 
-        print_verbose_info_ = value; 
-        if (value) {
+        print_verbose_info_ = choice; 
+        if (choice) {
           verbose_info_level_ = level >= 0 ? level : -1;
         } else {
           verbose_info_level_ = -1;
@@ -784,26 +957,26 @@ namespace pclomp
 
     private:
 
-      /** \brief [WANG_Guanhua] Filter cloud and initializes voxel structure.
+      /** \brief [WANG_Guanhua] Filter cloud and initializes/update voxels/leaves.
        * \param[out] output cloud containing centroids of voxels containing a sufficient number of points
        */
-      void applyFilterUnderIncrementalMode (PointCloud &output);
+      void applyFilterIncrementally (PointCloud &output);
 
     protected:
 
       /** \brief [WANG_Guanhua] Enable incremental version and block traditional version. */
       bool enable_incremetal_mode_;
 
-      /** \brief [WANG_Guanhua] Enable voxel downsample among different target point clouds. */
-      bool enable_voxel_downsample_;
-      float voxel_downsample_size_;
+      /** \brief [WANG_Guanhua] Enable voxel downsample inside a leaf, this helps to avoid repetitive points. */
+      bool enable_inleaf_downsample_;
+
+      /** \brief [WANG_Guanhua] Use by voxel downsample inside a leaf, voxel-size = ratio * leaf-size. */
+      float inleaf_voxelize_ratio_;
 
       /** \brief [WANG_Guanhua] Voxels beyond this bounding-box should be unloaded from container. */
       Eigen::Vector3f bounding_box_size_;
 
       /** \brief [WANG_Guanhua] try to trim out-of-box voxels every n meters. */
-      float trim_every_n_meters_;
-      Eigen::Vector3f current_position_;
       Eigen::Vector3f last_trimmed_position_;
 
       /** \brief [WANG_Guanhua] Valid voxel controid as pointcloud, then get kdtree; 

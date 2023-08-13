@@ -1,4 +1,4 @@
-#include "incremental_ndt_omp.h"
+// #include "incremental_ndt_omp.h"
 /*
  * Software License Agreement (BSD License)
  *
@@ -50,6 +50,8 @@
 #ifndef PCL_REGISTRATION_INCREMENTAL_NDT_OMP_IMPL_H_
 #define PCL_REGISTRATION_INCREMENTAL_NDT_OMP_IMPL_H_
 
+#include "incremental_ndt_omp.h"
+
 //////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 template<typename PointSource, typename PointTarget>
 pclomp::IncrementalNDT<PointSource, PointTarget>::IncrementalNDT ()
@@ -66,6 +68,10 @@ pclomp::IncrementalNDT<PointSource, PointTarget>::IncrementalNDT ()
   , h_ang_d3_ (), h_ang_e1_ (), h_ang_e2_ (), h_ang_e3_ (), h_ang_f1_ (), h_ang_f2_ (), h_ang_f3_ ()
   , enable_indt_mode_ (true)
   , indt_inited_ (false)
+  , bounding_box_size_ (Eigen::Vector3f(200.f, 200.f, 100.f))
+  , enable_auto_trim_ (true)
+  , auto_trim_every_n_meters_ (10.f)
+  , last_trimmed_position_ (Eigen::Vector3f(0.f, 0.f, 0.f))
 {
   reg_name_ = "IncrementalNDT";
 

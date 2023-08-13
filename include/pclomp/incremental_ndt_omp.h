@@ -64,7 +64,10 @@ namespace pclomp
 		DIRECT1
 	};
 
-	/** \brief A 3D Normal Distribution Transform registration implementation for point cloud data.
+	/** \brief An incremental version of original pclomp::NormalDistributionsTransform.
+   	 *  \author WANG Guanhua (guanhuamail@163.com) (North Western Polytechnical University, China)
+	 * 
+	 * \brief A 3D Normal Distribution Transform registration implementation for point cloud data.
 	  * \note For more information please see
 	  * <b>Magnusson, M. (2009). The Three-Dimensional Normal-Distributions Transform —
 	  * an Efficient Representation for Registration, Surface Analysis, and Loop Detection.
@@ -140,24 +143,36 @@ namespace pclomp
 				// if not inited, init first (using set or add).
 				// if already inited, add target cloud incrementally.
 				if (!indt_inited_) {
-					target_cells_.setIncrementalMode(true);
+					target_cells_.enableIncrementalMode(true);
 					target_cells_.setLeafSize(resolution_, resolution_, resolution_);
 					target_cells_.setInputCloud(target_);
 					target_cells_.filter(false); // update voxels and disable kdtree.
 					indt_inited_ = true;
 				} else {
-					// according to aligned pose of last round, dynamically trim extra voxels.
+					// according to aligned pose of last round, execute auto-trim every n meters.
 					Eigen::Matrix4f aligned_pose = this->getFinalTransformation();
-					target_cells_.updateVoxelMapCenterAndTrim(Eigen::Vector3f(aligned_pose.block<3,1>(0,3)));
+					Eigen::Vector3f current_position = Eigen::Vector3f(aligned_pose.block<3,1>(0,3));
+					if (enable_auto_trim_ && (current_position - last_trimmed_position_).norm() 
+						> auto_trim_every_n_meters_) {
+						last_trimmed_position_ = current_position;
+						target_cells_.trimVoxelsByBoundingBox(current_position);
+					}
 
-					// execute this round.
+					// execute alignment this round.
 					target_cells_.setInputCloud(target_);
 					target_cells_.filter(false); // update voxels and disable kdtree.
 				}
-
 			}
-			
-			
+		}
+
+		/** \brief Clean all existing voxels, and start from scratch.
+		  * \param[in] cloud the input point cloud target
+		  */
+		inline void
+			resetInputTarget(const PointCloudTargetConstPtr &cloud)
+		{
+			target_cells_.resetVoxels();
+			setInputTarget(cloud);
 		}
 
 		/** \brief Set/change the voxel grid resolution.
@@ -541,38 +556,78 @@ namespace pclomp
 		  * \param[in] value 
 		  */
 		inline void 
-			setIncrementalMode(const bool &value) { enable_indt_mode_ = value; }
+			enableIncrementalMode(const bool &value) { enable_indt_mode_ = value; }
 
-		/** \brief [WANG_Guanhua] [iNDT interface] Voxels beyond this range will be unloaded forever.
-		  * \param[in] box_size note that the range is two times the radius.
+		/** \brief [WANG_Guanhua] [iNDT interface] Set a bounding-box for auto-trim.
+		  * When auto-trim enabled, voxels beyond this box will be unloaded from memory.
+		  * \param[in] box_size note that the box should work around moving center.
 		  */
 		inline void 
-			setSpatialBoundingBoxForVoxels(const Eigen::Vector3f &box_size)  // 
+			setSpatialBoundingBoxForVoxels(const Eigen::Vector3f &box_size)
 		{
-			local_map_box_size_ = box_size;
+			bounding_box_size_ = box_size;
 			target_cells_.setBoundingBoxSize(box_size);
 		}
 
-		/** \brief [WANG_Guanhua] [iNDT interface] Automatically Search and unload voxels boyond bounding-box Every N meters.
+		/** \brief [WANG_Guanhua] [iNDT interface] Automatically Search and unload voxels boyond bounding-box.
 		  * \param[in] trim_every_n_meters 
 		  */
 		inline void 
-			setAutoTrimEveryNMeters(const float &trim_every_n_meters = 10.0)
+			setAutoTrimEveryNMeters(const bool& choice, const float &trim_every_n_meters = 10.0)
 		{
+			enable_auto_trim_ = choice;
 			if (trim_every_n_meters > 0) {
-				target_cells_.setTrimEveryNMeters(trim_every_n_meters);
+				auto_trim_every_n_meters_ = trim_every_n_meters;
 			} else {
+				enable_auto_trim_ = false;
 				PCL_ERROR ("[pcl::%s::setAutoTrimEveryNMeters] Invalid argument given!\n", getClassName ().c_str ());
 			}
 		}
 
-		/** \brief [WANG_Guanhua] [iNDT interface] Update voxel map center, and unload extra voxels beyond bound box.
-		  * \param[in] map_center 
+		/** \brief [WANG_Guanhua] Query setups. */
+		inline bool  getAutoTrimChoice() { return enable_auto_trim_; }
+		inline float getAutoTrimEveryNMeters() { return auto_trim_every_n_meters_; }
+
+		/** \brief [WANG_Guanhua] [iNDT interface] Manually execute "trim around bounding-box once".
+		  * \param[in] box_center_position 
 		  */
 		inline void 
-			updateIndtMapCenterAndTrim(const Eigen::Vector3f& map_center) 
+			trimByBoundingBoxOnce(const Eigen::Vector3f& box_center_position) 
 		{
-			target_cells_.updateVoxelMapCenterAndTrim(map_center);
+			target_cells_.trimVoxelsByBoundingBox(box_center_position);
+			last_trimmed_position_ = box_center_position;
+		}
+
+		/** \brief [WANG_Guanhua] [iNDT interface] Manually execute "trim by specific area once".
+		  * \param[in] position 
+		  */
+		inline void 
+			trimBySpecificAreaOnce(const Eigen::Vector3f& min_p, const Eigen::Vector3f& max_p) 
+		{
+			target_cells_.trimVoxelsBySpecificArea(min_p, max_p);
+		}
+
+		/** \brief [WANG_Guanhua] [iNDT interface] Under incremental mode, you can enable voxel downsample inside a leaf, 
+		  * this helps to avoid repetitive points.
+		  * \param[in] choice enable or disable.
+		  * \param[in] voxelize_ratio num of voxels would be (voxelize_ratio)^3.
+		  * \return 
+		  */
+		inline void 
+			enableInLeafDownsample(const bool &choice, const float &voxelize_ratio = 10)
+		{
+			target_cells_.enableInLeafDownsample(choice, voxelize_ratio);
+		}
+
+		/** \brief [WANG_Guanhua] [iNDT interface] If enable in-leaf downsample, then sampled points will be kept 
+		  * inside leaf, this function will collect all these points.
+		  * \note these points are those that truely be used for estimating normal distribution!
+		  * \return point cloud. 
+		  */
+		PointCloudTargetPtr 
+			getInLeafPointCloud() 
+		{
+			return target_cells_.getInLeafPointCloud();
 		}
 
 		/** \brief [WANG_Guanhua] [iNDT interface] Get a cloud to visualize each voxels normal distribution, 
@@ -586,6 +641,16 @@ namespace pclomp
 			target_cells_.getDisplayCloud(cell_cloud, num_points_per_voxel);
 		}
 
+		/** \brief [WANG_Guanhua] [iNDT interface] Provide complete voxels data, you can use it for either computation 
+       	  * or visualization.
+		  * \param[in] 
+		  */
+		std::shared_ptr<std::vector<VoxelData>>
+			getVoxelsData () 
+		{
+			return target_cells_.getVoxelsData();
+		}
+
 		/** \brief [WANG_Guanhua] [iNDT interface] If true, will print more info to command-line!
 		  * \param[in] value must be true to validate level.
 		  * \param[in] level -1: no log, 0: only most valuable log, 1~2, valuable or all log.
@@ -593,7 +658,7 @@ namespace pclomp
 		void 
 			setVerboseMode(const bool& value, const int& level = 0)
 		{
-			target_cells_.showVerboseInfo(value, level);
+			target_cells_.logVerboseInfo(value, level);
 		}
 
 	protected:
@@ -604,8 +669,13 @@ namespace pclomp
 		/** \brief [WANG_Guanhua] Whether incremental NDT is ready for aligning source cloud.*/
 	 	bool indt_inited_;
 
-		/** \brief [WANG_Guanhua] Record the moving bounding-box size.*/
-		Eigen::Vector3f local_map_box_size_;
+		/** \brief [WANG_Guanhua] Keep bounding-box size here, actually not used.*/
+		Eigen::Vector3f bounding_box_size_;
+
+		/** \brief [WANG_Guanhua] try to trim out-of-box voxels every n meters. */
+		bool enable_auto_trim_;
+		float auto_trim_every_n_meters_;
+		Eigen::Vector3f last_trimmed_position_;
 
 
 	public:
